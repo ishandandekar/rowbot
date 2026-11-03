@@ -55,11 +55,10 @@ class RowbotTuiApp(App):
 
     def compose(self) -> ComposeResult:
         yield Header()
-        with Horizontal(id="workspace"):
-            with Vertical(id="main-pane"):
-                yield TranscriptView(id="transcript")
-                with Horizontal(id="prompt-area"):
-                    yield PromptInput(id="prompt-input")
+        with Horizontal(id="workspace"), Vertical(id="main-pane"):
+            yield TranscriptView(id="transcript")
+            with Horizontal(id="prompt-area"):
+                yield PromptInput(id="prompt-input")
         yield Static("Ready", id="status-bar")
         yield Footer()
 

@@ -4,7 +4,6 @@ from textual.widgets import Input, Static
 
 from frontend.models import Message, Role
 
-
 PROMPT_PLACEHOLDER = "Type a message... Enter to send"
 
 

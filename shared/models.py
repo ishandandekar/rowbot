@@ -1,7 +1,6 @@
 from dataclasses import dataclass
 from enum import Enum, auto
 
-
 DEFAULT_BACKEND_URL = "http://localhost:8000"
 
 

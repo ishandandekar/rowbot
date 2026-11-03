@@ -1,3 +1,4 @@
+import logfire
 import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -15,6 +16,11 @@ app.add_middleware(
 )
 
 app.include_router(router)
+
+logfire.configure()
+logfire.instrument_system_metrics()
+logfire.instrument_fastapi(app=app)
+logfire.instrument_pydantic_ai()
 
 
 def run():
