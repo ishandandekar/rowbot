@@ -1,11 +1,13 @@
-import anyio
+import logfire
+from src.app import run_tui_app
 
-from frontend.app import run_tui_app
-from shared.models import DEFAULT_BACKEND_URL
+logfire.configure(send_to_logfire="if-token-present")
+logfire.instrument_system_metrics()
+logfire.instrument_pydantic_ai()
 
 
 def main() -> None:
-    anyio.run(lambda: run_tui_app(backend_url=DEFAULT_BACKEND_URL))
+    run_tui_app()
 
 
 if __name__ == "__main__":
