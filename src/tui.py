@@ -1,63 +1,34 @@
-from rich.panel import Panel
-import rich.spinner
 import asyncio
-import time
+from itertools import count
 from typing import ClassVar
 
+import logfire
+import rich.spinner
+from pydantic_ai import (
+    FunctionToolCallEvent,
+    FunctionToolResultEvent,
+    PartDeltaEvent,
+    PartEndEvent,
+    PartStartEvent,
+    TextPart,
+    TextPartDelta,
+    ThinkingPart,
+    ThinkingPartDelta,
+    ToolCallPart,
+    ToolReturnPart,
+)
+from rich.panel import Panel
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, VerticalScroll
 from textual.widgets import Button, Footer, Header, Input, Markdown, Static
 
+from src.agent import agent
 
-def text_streamer(delay: float = 0.05):
-    text = """
-# Clausit inpubesque igitur nemorosis
-
-## Quodque conceptus vultum conticuit
-
-Lorem markdownum Venerem totis vox: metuenda novata. Una utrimque tamen et Styga
-restabat septem calescit. Cum sinus eheu satiaque undis est vocant saxoque
-cinximus? Cum sinus novi honorat, statuunt, quadripedes vetus Aeneia Almo rupta
-dat adsiduae et cornua, ego retexi. Imagine corpus.
-
-- Letalem quaesitae
-- Nervo satum undis mergor venite naiadum
-- Haud nec
-
-Caelum et quicquam pectus est cineres quondam. Danais nullique divinae et terrae
-manus clamor, nubila magnanimus cessit torum modo lumina `resolutionProm`
-sepulta. Corpora miserabile suis tamen, validis Pico pede oculosque spoliata
-senserat, et regione paelex vix recingitur mearum. Ignorans arvum, latuit
-eludere. Urbem sive, **sex sonat**, negata ne gente ferret fidequemunera
-`bitmap_atm` odoribus.
-
-Hoc nulla: haec gerebam iuvenis tecum haemonii semina; robore e! Fatis non
-toroque amicas spectant Siqua carceris. Qua verba Gratia dixit, suos luce oro
-[sum coniunctior viso](#quodque-conceptus-vultum-conticuit) certumque Alpes, et
-nondum novo. In ab mota hanc vera sum, adspergine iam spectas.
-
-## Nullaque augentur omnia
-
-Manum laeva suspiria enim requies circumtulit fumis, iterabat vestrumque erit.
-Ministri flumina albis! Nisi cedere suum umidus distent sanctaque astris, posse
-acuti traxit erat harena. Habuit adeo Procne iam Troia tellus dixerat trita
-facinus talisque qui.
-
-> Dixi indignis est *ense est* neque quo mollibus volucrum; manu? Carinae cum
-> petit si patres torvos quique ab norant signa. Rore lux orbes sed Hectora
-> stagnata, iuventae hae tempora; dare funera donec obstipuit?
-
-Loqui arreptum Achille Ilion. Consorte tenebat, dare prece paelice? Cum misere
-patriae, fortius antra `systray_wins` lingua prima, conamine illo huic. Et
-inculpata inquit quae sua iamque culmen Cydoneasque regno et, suum exempla adde
-rerum."""
-    for word in text.split(" "):
-        yield word + " "
-        time.sleep(delay)
+BOX_COUNTER = count(start=1)
 
 
-class SpinnerWidget(Static):
+class ToolWidget(Static):
     def __init__(self, text: str = "Running..."):
         self._spinner = rich.spinner.Spinner("dots", text=text)
         panel = Panel(
@@ -68,7 +39,11 @@ class SpinnerWidget(Static):
         super().__init__(panel)
 
     def on_mount(self) -> None:
-        self.set_interval(1 / 10, self.refresh)
+        self._timer = self.set_interval(1 / 10, self.refresh)
+
+    def finish(self, panel: Panel) -> None:
+        self._timer.stop()  # kills the 10 Hz repaint forever
+        self.update(panel)
 
 
 class RowbotTuiApp(App):
@@ -80,6 +55,7 @@ class RowbotTuiApp(App):
     BINDINGS: ClassVar[list[Binding]] = [
         Binding("ctrl+c", "quit", "Quit", show=True),
         Binding("ctrl+l", "clear", "Clear", show=True),
+        Binding("escape", "interrupt", "Interrupt", show=True),
     ]
 
     CSS = """
@@ -105,6 +81,7 @@ class RowbotTuiApp(App):
     .message-row {
         width: 100%;
         height: auto;
+        text-wrap: wrap;
     }
 
     .message-row.user {
@@ -112,6 +89,9 @@ class RowbotTuiApp(App):
     }
 
     .message-row.ai {
+        align-horizontal: left;
+    }
+    .message-row.thinking {
         align-horizontal: left;
     }
 
@@ -131,17 +111,22 @@ class RowbotTuiApp(App):
     .bubble.ai {
         color: #94e2d5;
     }
+    .bubble.thinking {
+        color: #eff1f5;
+    }
 
     .bubble MarkdownBlock {
         width: auto;
+        max-width: 100%;
     }
     """
 
     def compose(self) -> ComposeResult:
+
         yield Header()
         yield VerticalScroll(id="conversation")
         with Horizontal(id="input-box"):
-            yield Input(placeholder="Enter your message...", id="message_input")
+            yield Input(placeholder="Enter your message...", id="message_input").focus()
             yield Button(label="Send", variant="success", id="send_button")
         yield Footer()
 
@@ -155,8 +140,8 @@ class RowbotTuiApp(App):
 
     async def process_conversation(self) -> None:
         message_input = self.query_one("#message_input", Input)
-        text = message_input.value.strip()
-        if not text:
+        user_message = message_input.value.strip()
+        if not user_message:
             return
 
         message_input.value = ""
@@ -164,36 +149,77 @@ class RowbotTuiApp(App):
         conversation = self.query_one("#conversation", VerticalScroll)
         await conversation.mount(
             Horizontal(
-                Markdown(text, classes="bubble user"),
+                Markdown(user_message, classes="bubble user"),
                 classes="message-row user",
             )
         )
-        ai_message = Markdown("", classes="bubble ai")
-        await conversation.mount(Horizontal(ai_message, classes="message-row ai"))
-        conversation.anchor()
 
-        stream = Markdown.get_stream(ai_message)
-        try:
-            for chunk in text_streamer(delay=0.02):
-                await stream.write(chunk)
-        finally:
-            await stream.stop()
-
-        tool_widget = SpinnerWidget("get_excel(name='abc.xlsx')")
-        await conversation.mount(tool_widget)
-        conversation.scroll_end()
-        await asyncio.sleep(6)
-        await tool_widget.remove()
-        await conversation.mount(
-            Static(
-                Panel(
-                    "[italic]get_excel[/italic] -> jksadsfljadfl...",
-                    title="tool",
-                    border_style="#f9e2af",
-                )
-            )
-        )
         conversation.anchor()
+        # tool = Static("get_execl()")
+        # await conversation.mount(tool)
+        # tool.loading = True
+        #
+        # await asyncio.sleep(6)
+        # tool.loading = False
+
+        blocks: dict[int, Markdown] = {}
+        tool_registry: dict[str, ToolWidget] = {}
+        async with agent.run_stream_events(user_prompt=user_message) as events:
+            async for event in events:
+                if isinstance(event, PartStartEvent):
+                    part = event.part
+                    if not isinstance(part, (ThinkingPart, TextPart)):
+                        continue
+                    if isinstance(part, ThinkingPart):
+                        classes, prefix = "bubble thinking", "thinking"
+                    if isinstance(part, TextPart):
+                        classes, prefix = "bubble ai", "ai"
+
+                    block = Markdown(
+                        str(part.content) if part.content is not None else "",  # ty:ignore[unresolved-attribute]
+                        classes=classes,
+                        id=prefix + "_" + str(next(BOX_COUNTER)),
+                    )
+                    await conversation.mount(
+                        Horizontal(block, classes="message-row ai")
+                    )
+                    blocks[event.index] = block
+                if isinstance(event, PartDeltaEvent):
+                    delta = event.delta
+                    if isinstance(delta, ThinkingPartDelta) or isinstance(
+                        delta, TextPartDelta
+                    ):
+                        text = delta.content_delta
+                    else:
+                        continue
+                    if text and (block := blocks.get(event.index)):
+                        await block.append(text)
+                if isinstance(event, PartEndEvent):
+                    blocks.pop(event.index, None)
+
+                if isinstance(event, FunctionToolCallEvent):
+                    part = event.part
+                    if isinstance(part, ToolCallPart):
+                        block = ToolWidget(f"{part.tool_name}({part.args_as_dict()})")
+                        await conversation.mount(block)
+                        tool_registry[part.tool_call_id] = block
+                if isinstance(event, FunctionToolResultEvent):
+                    part = event.part
+                    if isinstance(part, ToolReturnPart) and (
+                        block := tool_registry.get(part.tool_call_id)
+                    ):
+                        block.finish(
+                            Panel(
+                                f"[green]✓[/green] [yellow]{part.tool_name} => "
+                                f"{part.content if len(str(part.content)) < 20 else str(part.content)[:17] + '...'}",
+                                title="tool",
+                                border_style="#a6e3a1",
+                            )
+                        )
+
+        conversation.anchor()
+        message_input.focus()
+        await asyncio.to_thread(logfire.force_flush)
 
 
 def run_tui_app() -> None:
