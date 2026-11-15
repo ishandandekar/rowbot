@@ -1,9 +1,21 @@
+from rich.text import Text
+from pydantic_ai_harness.compaction import ContextUsageMeasuredEvent
+from pydantic_ai_harness.subagents import (
+    DelegationStartedEvent,
+    DelegationFinishedEvent,
+)
+from pydantic_ai_harness.planning import (
+    PlanCreatedEvent,
+    PlanUpdatedEvent,
+    PlanStatusChangedEvent,
+    PlanCompletedEvent,
+    PlanDeletedEvent,
+)
 import asyncio
 from itertools import count
 from typing import ClassVar
 
 import logfire
-import rich.spinner
 from pydantic_ai import (
     FunctionToolCallEvent,
     FunctionToolResultEvent,
@@ -20,30 +32,45 @@ from pydantic_ai import (
 from rich.panel import Panel
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, VerticalScroll
-from textual.widgets import Button, Footer, Header, Input, Markdown, Static
+from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.widgets import Footer, Header, Input, Markdown, Label
 
-from src.agent import agent
+from textual.theme import Theme
+from src.agent import agent as _agent
+from src.tui_elements import ToolWidget, TaskWidget
 
 BOX_COUNTER = count(start=1)
+tools_to_not_show = [
+    "write_plan",
+    "read_plan",
+    "add_task",
+    "update_task_status",
+    "update_task_statuses",
+    "remove_task",
+    "create_agent",
+    "delegate_task",
+]
 
 
-class ToolWidget(Static):
-    def __init__(self, text: str = "Running..."):
-        self._spinner = rich.spinner.Spinner("dots", text=text)
-        panel = Panel(
-            self._spinner,
-            title="tool",
-            border_style="#f9e2af",
-        )
-        super().__init__(panel)
-
-    def on_mount(self) -> None:
-        self._timer = self.set_interval(1 / 10, self.refresh)
-
-    def finish(self, panel: Panel) -> None:
-        self._timer.stop()  # kills the 10 Hz repaint forever
-        self.update(panel)
+catppuccin_mocha = Theme(
+    name="catppuccin-mocha",
+    primary="#89B4FA",  # Blue
+    secondary="#B4BEFE",  # Lavender
+    accent="#CBA6F7",  # Mauve
+    foreground="#CDD6F4",  # Text
+    background="#11111b",  # Base
+    success="#A6E3A1",  # Green
+    warning="#F9E2AF",  # Yellow
+    error="#F38BA8",  # Red
+    surface="#313244",  # Surface 0
+    panel="#45475A",  # Surface 1
+    dark=True,
+    variables={
+        "block-cursor-text-style": "none",
+        "footer-key-foreground": "#89B4FA",
+        "input-selection-background": "#B4BEFE 35%",
+    },
+)
 
 
 class RowbotTuiApp(App):
@@ -64,19 +91,33 @@ class RowbotTuiApp(App):
         height: auto;
         width: 100%;
         margin: 0 0 2 0;
-        align-horizontal: center;
+    }
+
+    #plan-container {
+        width: 100%;
+        height: auto;
+    }
+
+    #plan-container TaskWidget {
+        width: 1fr;
+        height: auto;
+    }
+
+    #input-row {
+        width: 1fr;
+        height: auto;
+    }
+    #context-length {
+        width: 1fr;
+        height: auto;
+        color: #f9e2af;
+        padding-left: 2;
     }
 
     #message_input {
-        width: 80%;
+        width: 100%;
     }
 
-    #send_button {
-        width: 20%;
-        color: #11111b;
-        background: #fab387;
-        border: blank;
-    }
 
     .message-row {
         width: 100%;
@@ -99,7 +140,7 @@ class RowbotTuiApp(App):
         width: auto;
         max-width: 75%;
         height: auto;
-        margin: 1 0;
+        margin: 0 0;
         padding: 1 3;
     }
 
@@ -109,10 +150,12 @@ class RowbotTuiApp(App):
     }
 
     .bubble.ai {
-        color: #94e2d5;
+        color: #94e2d5;    
+        text-style: bold;
     }
     .bubble.thinking {
         color: #eff1f5;
+        text-style: italic;
     }
 
     .bubble MarkdownBlock {
@@ -121,18 +164,22 @@ class RowbotTuiApp(App):
     }
     """
 
-    def compose(self) -> ComposeResult:
+    def on_mount(self):
+        self._task_widget: TaskWidget | None = None
+        self.register_theme(catppuccin_mocha)
+        self.theme = "catppuccin-mocha"
 
+    def compose(self) -> ComposeResult:
         yield Header()
         yield VerticalScroll(id="conversation")
-        with Horizontal(id="input-box"):
-            yield Input(placeholder="Enter your message...", id="message_input").focus()
-            yield Button(label="Send", variant="success", id="send_button")
+        with Vertical(id="input-box"):
+            yield Horizontal(id="plan-container")
+            yield Label(id="context-length")
+            with Horizontal(id="input-row"):
+                yield Input(
+                    placeholder="Enter your message...", id="message_input"
+                ).focus()
         yield Footer()
-
-    async def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "send_button":
-            await self.process_conversation()
 
     async def on_input_submitted(self, event: Input.Submitted) -> None:
         if event.input.id == "message_input":
@@ -154,17 +201,18 @@ class RowbotTuiApp(App):
             )
         )
 
+        plan_container = self.query_one("#plan-container", Horizontal)
+        context_label_container = self.query_one("#context-length", Label)
+
+        if self._task_widget is not None:
+            self._task_widget.remove()
+        self._task_widget = None
+
         conversation.anchor()
-        # tool = Static("get_execl()")
-        # await conversation.mount(tool)
-        # tool.loading = True
-        #
-        # await asyncio.sleep(6)
-        # tool.loading = False
 
         blocks: dict[int, Markdown] = {}
         tool_registry: dict[str, ToolWidget] = {}
-        async with agent.run_stream_events(user_prompt=user_message) as events:
+        async with _agent.run_stream_events(user_prompt=user_message) as events:
             async for event in events:
                 if isinstance(event, PartStartEvent):
                     part = event.part
@@ -176,7 +224,7 @@ class RowbotTuiApp(App):
                         classes, prefix = "bubble ai", "ai"
 
                     block = Markdown(
-                        str(part.content) if part.content is not None else "",  # ty:ignore[unresolved-attribute]
+                        str(part.content) if part.content is not None else "",
                         classes=classes,
                         id=prefix + "_" + str(next(BOX_COUNTER)),
                     )
@@ -196,9 +244,10 @@ class RowbotTuiApp(App):
                         await block.append(text)
                 if isinstance(event, PartEndEvent):
                     blocks.pop(event.index, None)
-
                 if isinstance(event, FunctionToolCallEvent):
                     part = event.part
+                    if part.tool_name in tools_to_not_show:
+                        continue
                     if isinstance(part, ToolCallPart):
                         block = ToolWidget(f"{part.tool_name}({part.args_as_dict()})")
                         await conversation.mount(block)
@@ -216,6 +265,56 @@ class RowbotTuiApp(App):
                                 border_style="#a6e3a1",
                             )
                         )
+                if isinstance(event, PlanCreatedEvent):
+                    if self._task_widget is None or self._task_widget.parent is None:
+                        self._task_widget = TaskWidget()
+                        await plan_container.mount(self._task_widget)
+                    self._task_widget.create_plan_item(event.item)
+                if (
+                    isinstance(event, PlanUpdatedEvent)
+                    and self._task_widget is not None
+                ):
+                    self._task_widget.update_plan_item(event.item)
+                if (
+                    isinstance(event, PlanStatusChangedEvent)
+                    and self._task_widget is not None
+                ):
+                    self._task_widget.update_plan_item(event.item)
+                if (
+                    isinstance(event, PlanCompletedEvent)
+                    and self._task_widget is not None
+                ):
+                    self._task_widget.complete_plan_item(event.item)
+                if (
+                    isinstance(event, PlanDeletedEvent)
+                    and self._task_widget is not None
+                ):
+                    self._task_widget.delete_plan_item(event.item.id)
+                if (
+                    isinstance(event, DelegationStartedEvent)
+                    and event.tool_call_id is not None
+                ):
+                    if self._task_widget is None or self._task_widget.parent is None:
+                        self._task_widget = TaskWidget()
+                        await plan_container.mount(self._task_widget)
+                    self._task_widget.create_subagent_task(
+                        task_id=event.tool_call_id,
+                        task_description=event.task,
+                        subagent_name=event.agent_name,
+                    )
+                if (
+                    isinstance(event, DelegationFinishedEvent)
+                    and event.tool_call_id is not None
+                    and self._task_widget is not None
+                ):
+                    self._task_widget.complete_subagent_task(task_id=event.tool_call_id)
+                if isinstance(event, ContextUsageMeasuredEvent):
+                    context_label_container.update(
+                        Text(
+                            "Context: " + str(round(event.fraction * 100, 2)) + " %",
+                            style="bold italic",
+                        )
+                    )
 
         conversation.anchor()
         message_input.focus()

@@ -1,4 +1,5 @@
 import asyncio
+import random
 import sys
 
 from catppuccin.extras.rich_ctp import mocha
@@ -21,14 +22,17 @@ from pydantic_ai import (
 from pydantic_ai.capabilities import Instrumentation
 from pydantic_ai.models.ollama import OllamaModel
 from pydantic_ai.providers.ollama import OllamaProvider
-from pydantic_ai_harness.docker_sandbox import DockerSandbox
+from pydantic_ai.settings import ModelSettings
+from pydantic_ai_harness import Planning, AskUser
+from pydantic_ai_harness.subagents import DynamicAgents, SubAgents
+from pydantic_ai_harness.compaction import ReportContextUsage
 from rich.console import Console
 from rich.status import Status
 from rich.style import Style
 
 
 async def get_emails(_: RunContext, email_id: EmailStr):
-    await asyncio.sleep(5)
+    await asyncio.sleep(9)
     emails = [
         "Meeting at 8PM with ClosedAI CEO",
         "IMP: Watermelon announced as best fruit of the world",
@@ -58,14 +62,15 @@ async def get_emails(_: RunContext, email_id: EmailStr):
         "Spam: Buy 1 watermelon Get 4 FREE!!",
     ]
     if email_id == "suckdeeznuts@gobble.com":
-        return emails[:10]
+        return random.sample(emails[:10], 5)
     else:
-        return emails[10:16]
+        return random.sample(emails[10:], 3)
 
 
 model = OllamaModel(
-    "qwen3.5:2b",
+    "bonsai-2:4b",
     provider=OllamaProvider(base_url="http://localhost:11434/v1"),
+    settings=ModelSettings(max_tokens=5120),
 )
 
 agent = Agent(
@@ -73,16 +78,24 @@ agent = Agent(
     name="rowbot",
     system_prompt="You are Rowbot, a helpful assistant.",
     tools=[get_emails],
-    capabilities=[DockerSandbox(image="python:3.13-slim"), Instrumentation()],
+    capabilities=[
+        # DockerSandbox(image="python:3.13-slim"),
+        SubAgents(
+            include_self=True,
+            dynamic_agents=DynamicAgents(max_agents=3),
+            # task_control=TaskControl(auto_background_after=15),
+        ),
+        Instrumentation(),
+        Planning(),
+        ReportContextUsage(context_window=model.settings["max_tokens"]),  # ty:ignore[not-subscriptable]
+    ],
 )
 
 
 async def print_to_console():
     console = Console(log_path=True, log_time=False, theme=mocha)
     async with agent.run_stream_events(
-        "Hi can you get me my emails? "
-        "My email id is suckdeeznuts@gobble.com. "
-        "You have complete access to get the emails"
+        user_prompt="Hi, can you get my emails. My email-ids are `suckdeeznuts@gobble.com and salimseekhkebab@heaven.com You have complete access to my emails. Make a plan first"
     ) as events:
         async for event in events:
             console.print(event)
@@ -94,9 +107,7 @@ async def stream_events_trial():
     text_answer_console_style = Style(color="#cba6f7")
     spinner_registry: dict[str, Status] = {}
     async with agent.run_stream_events(
-        "Hi can you get me my emails? "
-        "My email id is suckdeeznuts@gobble.com. "
-        "You have complete access to get the emails"
+        "Hi, can you show by example and by calling the actual tools, how do you spin up subagents"
     ) as events:
         async for event in events:
             if isinstance(event, PartStartEvent):
@@ -107,7 +118,7 @@ async def stream_events_trial():
                 if isinstance(part, TextPart):
                     console.print(part.content, style=text_answer_console_style, end="")
                     sys.stdout.flush()
-            if isinstance(event, PartEndEvent):
+            elif isinstance(event, PartEndEvent):
                 part = event.part
                 if isinstance(part, ThinkingPart):
                     console.print("\n", style=thinking_console_style, end="")
@@ -115,7 +126,7 @@ async def stream_events_trial():
                 if isinstance(part, TextPart):
                     console.print("\n", style=text_answer_console_style, end="")
                     sys.stdout.flush()
-            if isinstance(event, FunctionToolCallEvent):
+            elif isinstance(event, FunctionToolCallEvent):
                 part = event.part
                 if isinstance(part, ToolCallPart):
                     console.print()
@@ -127,7 +138,7 @@ async def stream_events_trial():
                         status=f"[italic yellow] {part.tool_name}({part.args_as_dict()})"
                     )
                     spinner_registry[part.tool_call_id].start()
-            if isinstance(event, PartDeltaEvent):
+            elif isinstance(event, PartDeltaEvent):
                 delta = event.delta
                 if isinstance(delta, ThinkingPartDelta):
                     console.print(
@@ -139,7 +150,7 @@ async def stream_events_trial():
                         delta.content_delta, style=text_answer_console_style, end=""
                     )
                     sys.stdout.flush()
-            if isinstance(event, FunctionToolResultEvent):
+            elif isinstance(event, FunctionToolResultEvent):
                 part = event.part
                 if isinstance(part, ToolReturnPart):
                     spinner_registry[part.tool_call_id].stop()
@@ -147,7 +158,8 @@ async def stream_events_trial():
                         f"[green]✓[/green] [yellow]{part.tool_name} => "
                         + f"{part.content if len(str(part.content)) < 20 else str(part.content)[:17] + '...'}[/yellow]"
                     )
-
+            else:
+                console.print(event)
         # print(result)
 
 
@@ -158,5 +170,7 @@ if __name__ == "__main__":
     #     "You have complete access to get the emails",
     #     # capabilities=[ProcessEventStream(log_events)],
     # )
-    prompt = "Hi, can you get my emails. My email-ids are `suckdeeznuts@gobble.com and salimseekhkebab@heaven.com You have complete access to my emails"
-    asyncio.run(print_to_console())
+    prompt = "Hi, can you get my emails. My email-ids are `suckdeeznuts@gobble.com and salimseekhkebab@heaven.com You have complete access to my emails. Try to do tool calls simulatanously and always make a plan"
+    prompt2 = "Show me an example about creating a plan, updating status, completing a task and also removing a task"
+    # asyncio.run(print_to_console())
+    asyncio.run(stream_events_trial())
