@@ -28,6 +28,7 @@ from pydantic_ai import (
     ThinkingPartDelta,
     ToolCallPart,
     ToolReturnPart,
+    AgentRunResultEvent,
 )
 from rich.panel import Panel
 from textual.app import App, ComposeResult
@@ -315,6 +316,8 @@ class RowbotTuiApp(App):
                             style="bold italic",
                         )
                     )
+                if isinstance(event, AgentRunResultEvent):
+                    all_messages = event.result.all_messages()
 
         conversation.anchor()
         message_input.focus()
