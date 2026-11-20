@@ -1,0 +1,191 @@
+Screen {
+    background: $mo-mantle;
+    color: $foreground;
+}
+
+Header {
+    background: $mo-mantle;
+    color: $mo-pink;
+    text-style: bold;
+    border-bottom: wide $mo-mauve;
+}
+
+Footer {
+    background: $mo-mantle;
+    color: $mo-subtext1;
+}
+
+VerticalScroll {
+    scrollbar-background: $mo-mantle;
+    scrollbar-color: $mo-surface2;
+    scrollbar-color-hover: $mo-overlay0;
+    scrollbar-color-active: $mo-mauve;
+}
+
+#conversation {
+    background: $mo-base;
+    padding: 1 2;
+}
+
+.message-row {
+    width: 100%;
+    height: auto;
+    margin: 0 0 1 0;
+}
+
+.message-row.user {
+    align-horizontal: right;
+}
+
+.message-row.ai {
+    align-horizontal: left;
+}
+
+.message-row.thinking {
+    align-horizontal: left;
+}
+
+.bubble {
+    width: auto;
+    max-width: 80%;
+    height: auto;
+    padding: 1 2;
+}
+
+.bubble.user {
+    background: transparent;
+    color: $mo-red;
+    text-style: bold;
+}
+
+.bubble.ai {
+    background: transparent;
+    color: $mo-teal;
+}
+
+.bubble.thinking {
+    background: transparent;
+    color: $mo-subtext0;
+    text-style: italic;
+}
+
+.bubble MarkdownBlock {
+    width: auto;
+    max-width: 100%;
+}
+
+ToolWidget {
+    width: auto;
+    max-width: 80%;
+    height: auto;
+    margin: 0 0 1 2;
+}
+
+#input-box {
+    dock: bottom;
+    height: auto;
+    width: 100%;
+    background: $mo-crust;
+    border-top: wide $mo-surface1;
+    padding: 0 1 1 1;
+}
+
+#plan-container {
+    width: 100%;
+    height: auto;
+}
+
+#plan-container TaskWidget {
+    width: 1fr;
+    height: auto;
+}
+
+TaskWidget {
+    color: $mo-subtext1;
+}
+
+#context-length {
+    width: 1fr;
+    height: auto;
+    color: $mo-yellow;
+    padding-left: 2;
+    text-style: bold;
+}
+
+#input-row {
+    width: 1fr;
+    height: auto;
+    padding: 0 1;
+}
+
+#message_input {
+    width: 100%;
+    background: $mo-mantle;
+    color: $mo-text;
+    border: round $mo-pink;
+    border-left: none;
+    border-right: none;
+    padding: 0 0;
+}
+
+#message_input:focus {
+    background: $mo-mantle;
+    border: round $mo-pink;
+    border-left: none;
+    border-right: none;
+}
+
+#commands-popup {
+    display: none;
+    height: auto;
+    max-height: 12;
+    width: 60;
+    max-width: 100%;
+    margin: 0 1 1 1;
+    padding: 0 1;
+    background: $mo-surface0;
+    color: $mo-text;
+    border: round $mo-mauve;
+    scrollbar-background: $mo-mantle;
+    scrollbar-color: $mo-overlay0;
+}
+
+#commands-popup.visible {
+    display: block;
+}
+
+#commands-popup > .option-list--option {
+    padding: 0 1;
+}
+
+#commands-popup > .option-list--option-highlighted {
+    color: $mo-text;
+    background: $mo-mauve 35%;
+    text-style: bold;
+}
+
+#commands-popup > .option-list--option-hover {
+    background: $mo-surface2;
+}
+
+ToastRack {
+    dock: top;
+    align: right top;
+    background: transparent;
+}
+
+Toast {
+    background: $mo-surface1;
+}
+
+Toast.-information {
+    border-left: wide $mo-blue;
+}
+
+Toast.-warning {
+    border-left: wide $mo-yellow;
+}
+
+Toast.-error {
+    border-left: wide $mo-red;
+}

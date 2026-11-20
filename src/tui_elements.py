@@ -1,13 +1,16 @@
-from rich.console import Group
 import time
 from typing import TypedDict
 
-from pydantic_ai_harness.planning import PlanItem as HarnessPlanItem, TaskStatus
+from pydantic_ai_harness.planning import PlanItem as HarnessPlanItem
+from pydantic_ai_harness.planning import TaskStatus
+from rich.columns import Columns
+from rich.console import Group
 from rich.panel import Panel
 from rich.spinner import Spinner
 from rich.text import Text
-from rich.columns import Columns
 from textual.widgets import Static
+
+from src.palette import GREEN, MAUVE, RED, SUBTEXT0, SUBTEXT1, TEAL, YELLOW
 
 
 class ToolWidget(Static):
@@ -15,9 +18,10 @@ class ToolWidget(Static):
         self._spinner = Spinner("dots", text=text)
         panel = Panel(
             self._spinner,
-            # box=None,
             title="tool",
-            border_style="#f9e2af",
+            title_align="left",
+            border_style=YELLOW,
+            padding=(0, 1),
         )
         super().__init__(panel)
 
@@ -102,7 +106,7 @@ class TaskWidget(Static):
         if len(sorted_items) >= 1:
             for item in sorted_items:
                 if item["status"] is TaskStatus.completed:
-                    _items_to_show.append(Text("󰗠 " + item["task"]))
+                    _items_to_show.append(Text("󰗠 " + item["task"], style=GREEN))
                 elif item["status"] is TaskStatus.in_progress:
                     spinner = self._spinners.get(item["id"])
                     if spinner is None:
@@ -113,20 +117,20 @@ class TaskWidget(Static):
                     active_ids.add(item["id"])
                     _items_to_show.append(spinner)
                 elif item["status"] in (TaskStatus.cancelled, TaskStatus.blocked):
-                    _items_to_show.append(Text("󰜺 " + item["task"], style="dim"))
+                    _items_to_show.append(Text("󰜺 " + item["task"], style=f"dim {RED}"))
                 else:
-                    _items_to_show.append(Text("○ " + item["task"], style="dim"))
+                    _items_to_show.append(
+                        Text("○ " + item["task"], style=f"dim {SUBTEXT0}")
+                    )
             panel_counter += 1
 
         # Prune subagent tasks
         if len(self.subagent_tasks) >= 1:
             self.subagent_tasks = list(
                 filter(
-                    lambda task: (
-                        True
-                        if (task["ended_at"] is None)
-                        or ((time.monotonic() - task["ended_at"]) < 13)
-                        else False
+                    lambda task: bool(
+                        task["ended_at"] is None
+                        or time.monotonic() - task["ended_at"] < 13
                     ),
                     self.subagent_tasks,
                 )
@@ -134,8 +138,11 @@ class TaskWidget(Static):
         _subagent_tasks_to_show = []
         if len(self.subagent_tasks) > 0:
             for task in self.subagent_tasks:
-                text_suffix = Text(str(task["subagent_name"]), style="bold") + Text(
-                    " | " + str(task["task_description"])[:14] + "..."
+                text_suffix = Text(
+                    str(task["subagent_name"]), style=f"bold {MAUVE}"
+                ) + Text(
+                    " | " + str(task["task_description"])[:14] + "...",
+                    style=SUBTEXT1,
                 )
                 if task["ended_at"] is None:
                     spinner = self._spinners.get(task["task_id"])
@@ -148,7 +155,7 @@ class TaskWidget(Static):
                     active_ids.add(task["task_id"])
                     _subagent_tasks_to_show.append(spinner)
                 else:
-                    _subagent_tasks_to_show.append(Text("󰗠 ") + text_suffix)
+                    _subagent_tasks_to_show.append(Text("󰗠 ", style=TEAL) + text_suffix)
             panel_counter += 1
 
         for stale in set(self._spinners) - active_ids:
@@ -172,8 +179,9 @@ class TaskWidget(Static):
                 Panel(
                     Group(*_items_to_show),
                     title="Plan",
-                    border_style="blue",
+                    border_style=MAUVE,
                     title_align="left",
+                    padding=(0, 1),
                     width=panel_width,
                 )
             )
@@ -182,8 +190,9 @@ class TaskWidget(Static):
                 Panel(
                     Group(*_subagent_tasks_to_show),
                     title="Subagents",
-                    border_style="blue",
+                    border_style=TEAL,
                     title_align="left",
+                    padding=(0, 1),
                     width=panel_width,
                 )
             )

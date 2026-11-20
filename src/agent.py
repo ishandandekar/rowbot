@@ -1,3 +1,4 @@
+from pathlib import Path
 import asyncio
 import random
 import sys
@@ -23,12 +24,21 @@ from pydantic_ai.capabilities import Instrumentation
 from pydantic_ai.models.ollama import OllamaModel
 from pydantic_ai.providers.ollama import OllamaProvider
 from pydantic_ai.settings import ModelSettings
-from pydantic_ai_harness import Planning, AskUser
-from pydantic_ai_harness.subagents import DynamicAgents, SubAgents
+from pydantic_ai_harness import Planning
+from pydantic_ai_harness.ask_user import AskUserAnswer, AskUserRequest, AskUserResponse
 from pydantic_ai_harness.compaction import ReportContextUsage
+from pydantic_ai_harness.subagents import DynamicAgents, SubAgents
 from rich.console import Console
 from rich.status import Status
 from rich.style import Style
+
+
+async def pick_first(request: AskUserRequest) -> AskUserResponse:
+    answers = [
+        AskUserAnswer(header=q.header, selected=(q.options[0].label,))
+        for q in request.questions
+    ]
+    return AskUserResponse(answers=tuple(answers))
 
 
 async def get_emails(_: RunContext, email_id: EmailStr):
@@ -58,7 +68,7 @@ async def get_emails(_: RunContext, email_id: EmailStr):
         "100% OFF: Everything is free, but only in your imagination",
         "Reminder: You still owe the office plant ₹500",
         "CONFIDENTIAL: Project Watermelon is now operational",
-        "Last chance to invest in my revolutionary invisible umbrella!"
+        "Last chance to invest in my revolutionary invisible umbrella!",
         "Spam: Buy 1 watermelon Get 4 FREE!!",
     ]
     if email_id == "suckdeeznuts@gobble.com":
@@ -101,8 +111,7 @@ async def print_to_console():
             console.print(event)
 
 
-async def stream_events_trial():
-    console = Console(log_path=True, log_time=False, theme=mocha)
+async def stream_events_trial(console):
     thinking_console_style = Style(color="#89b4fa", dim=True)
     text_answer_console_style = Style(color="#cba6f7")
     spinner_registry: dict[str, Status] = {}
@@ -173,4 +182,14 @@ if __name__ == "__main__":
     prompt = "Hi, can you get my emails. My email-ids are `suckdeeznuts@gobble.com and salimseekhkebab@heaven.com You have complete access to my emails. Try to do tool calls simulatanously and always make a plan"
     prompt2 = "Show me an example about creating a plan, updating status, completing a task and also removing a task"
     # asyncio.run(print_to_console())
-    asyncio.run(stream_events_trial())
+    console = Console(log_path=True, log_time=False, theme=mocha)
+    # asyncio.run(stream_events_trial(console=console))
+    from pydantic_ai import ConversationTypeAdapter
+
+    conversation_data = (
+        Path.cwd() / "conversations/01a1f87c-1555-724d-a7a5-b730a9b47b38.json"
+    ).read_bytes()
+    _conversation = ConversationTypeAdapter.validate_json(conversation_data)
+    console.print(_conversation.usage)
+    for message in _conversation.messages:
+        console.print(message)
