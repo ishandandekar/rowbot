@@ -1,3 +1,4 @@
+from dataclasses import asdict
 from pathlib import Path
 import asyncio
 import random
@@ -19,13 +20,21 @@ from pydantic_ai import (
     ThinkingPartDelta,
     ToolCallPart,
     ToolReturnPart,
+    AgentRunResult,
+    DeferredToolRequests,
+    DeferredToolResults,
 )
 from pydantic_ai.capabilities import Instrumentation
 from pydantic_ai.models.ollama import OllamaModel
 from pydantic_ai.providers.ollama import OllamaProvider
 from pydantic_ai.settings import ModelSettings
-from pydantic_ai_harness import Planning
-from pydantic_ai_harness.ask_user import AskUserAnswer, AskUserRequest, AskUserResponse
+from pydantic_ai_harness import Planning, AskUser
+from pydantic_ai_harness.ask_user import (
+    AskUserAnswer,
+    AskUserRequest,
+    AskUserResponse,
+    AskUserRequestedEvent,
+)
 from pydantic_ai_harness.compaction import ReportContextUsage
 from pydantic_ai_harness.subagents import DynamicAgents, SubAgents
 from rich.console import Console
@@ -80,12 +89,13 @@ async def get_emails(_: RunContext, email_id: EmailStr):
 model = OllamaModel(
     "bonsai-2:4b",
     provider=OllamaProvider(base_url="http://localhost:11434/v1"),
-    settings=ModelSettings(max_tokens=5120),
+    settings=ModelSettings(max_tokens=14000),
 )
 
 agent = Agent(
-    model,
+    "groq:qwen/qwen3.8-27b",
     name="rowbot",
+    output_type=[str, DeferredToolRequests],
     system_prompt="You are Rowbot, a helpful assistant.",
     tools=[get_emails],
     capabilities=[
@@ -98,7 +108,9 @@ agent = Agent(
         Instrumentation(),
         Planning(),
         ReportContextUsage(context_window=model.settings["max_tokens"]),  # ty:ignore[not-subscriptable]
+        AskUser(answerer=None),
     ],
+    retries=10,
 )
 
 
@@ -116,9 +128,12 @@ async def stream_events_trial(console):
     text_answer_console_style = Style(color="#cba6f7")
     spinner_registry: dict[str, Status] = {}
     async with agent.run_stream_events(
-        "Hi, can you show by example and by calling the actual tools, how do you spin up subagents"
+        "Use the ask user tool to ask me multiple choice questions. Make only two questions"
     ) as events:
         async for event in events:
+            if isinstance(event, AskUserRequestedEvent):
+                request = event.request
+                console.print(asdict(request))
             if isinstance(event, PartStartEvent):
                 part = event.part
                 if isinstance(part, ThinkingPart):
@@ -183,13 +198,13 @@ if __name__ == "__main__":
     prompt2 = "Show me an example about creating a plan, updating status, completing a task and also removing a task"
     # asyncio.run(print_to_console())
     console = Console(log_path=True, log_time=False, theme=mocha)
-    # asyncio.run(stream_events_trial(console=console))
-    from pydantic_ai import ConversationTypeAdapter
-
-    conversation_data = (
-        Path.cwd() / "conversations/01a1f87c-1555-724d-a7a5-b730a9b47b38.json"
-    ).read_bytes()
-    _conversation = ConversationTypeAdapter.validate_json(conversation_data)
-    console.print(_conversation.usage)
-    for message in _conversation.messages:
-        console.print(message)
+    asyncio.run(stream_events_trial(console=console))
+    # from pydantic_ai import ConversationTypeAdapter
+    #
+    # conversation_data = (
+    #     Path.cwd() / "conversations/01a1f87c-1555-724d-a7a5-b730a9b47b38.json"
+    # ).read_bytes()
+    # _conversation = ConversationTypeAdapter.validate_json(conversation_data)
+    # console.print(_conversation.usage)
+    # for message in _conversation.messages:
+    #     console.print(message)

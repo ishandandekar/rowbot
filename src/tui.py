@@ -1,3 +1,9 @@
+from pydantic_ai_harness.ask_user import (
+    TOOL_NAME,
+    AskUserRequest,
+    AskUserResponse,
+    ask_user_result,
+)
 from textual.widgets.option_list import Option
 from textual.fuzzy import Matcher
 import httpx
@@ -24,6 +30,9 @@ from pydantic_ai import (
     ModelRequest,
     UserPromptPart,
     ModelResponse,
+    AgentRunResult,
+    DeferredToolRequests,
+    DeferredToolResults,
 )
 from pydantic_ai_harness.compaction import ContextUsageMeasuredEvent
 from pydantic_ai_harness.planning import (
@@ -43,7 +52,14 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.theme import Theme
-from textual.widgets import Footer, Header, Input, Label, Markdown, OptionList
+from textual.widgets import (
+    Footer,
+    Header,
+    Input,
+    Label,
+    Markdown,
+    OptionList,
+)
 
 from src.agent import agent as _agent
 from src.palette import (
@@ -73,7 +89,7 @@ from src.palette import (
     TEXT,
     YELLOW,
 )
-from src.tui_elements import TaskWidget, ToolWidget
+from src.tui_elements import TaskWidget, ToolWidget, AskUserWidget
 
 BOX_COUNTER = count(start=1)
 TOOLS_NOT_TO_SHOW = [
@@ -85,6 +101,7 @@ TOOLS_NOT_TO_SHOW = [
     "remove_task",
     "create_agent",
     "delegate_task",
+    "ask_user_question",
 ]
 CONVERSATIONS_DIR = Path.cwd() / "conversations"
 CONVERSATIONS_DIR.mkdir(exist_ok=True)
@@ -185,6 +202,8 @@ class RowbotTuiApp(App):
         super().__init__(*args, **kwargs)
         self.register_theme(catppuccin_mocha)
         self.theme = "catppuccin-mocha"
+        self._pending_ask_user: dict[str, AskUserRequest] = {}
+        self._ask_user_widget: AskUserWidget | None = None
 
     def on_mount(self):
         self._latest_conversation_path = max(
@@ -242,6 +261,7 @@ class RowbotTuiApp(App):
                                     classes="message-row ai",
                                 )
                             )
+        self.query_one("#ask_user_container", Horizontal).remove_class("visible")
 
     async def _warm_up_llm(self) -> None:
         """Warm the local model off the event loop."""
@@ -264,6 +284,7 @@ class RowbotTuiApp(App):
         yield Header()
         yield VerticalScroll(id="conversation")
         with Vertical(id="input-box"):
+            yield Horizontal(id="ask_user_container")
             yield Horizontal(id="plan-container")
             yield Label(id="context-length")
             yield OptionList(id="commands-popup")
@@ -306,6 +327,10 @@ class RowbotTuiApp(App):
         await self._auto_complete_command(str(event.option.id))
 
     async def on_key(self, event) -> None:
+        if self._ask_user_widget is not None and event.key == "escape":
+            event.stop()
+            self._ask_user_widget.cancel()
+            return
         popup = self.query_one("#commands-popup", OptionList)
         if not popup.has_class("visible"):
             return
@@ -333,6 +358,14 @@ class RowbotTuiApp(App):
 
     async def _execute_slash_command(self, command: str):
         if command == "/new":
+            if self._ask_user_widget is not None:
+                self._ask_user_widget.cancel()
+            self.workers.cancel_group(self, "conversation")
+            self._pending_ask_user = {}
+            ask_user_container = self.query_one("#ask_user_container", Horizontal)
+            ask_user_container.remove_class("visible")
+            message_input = self.query_one("#message_input", Input)
+            message_input.disabled = False
             if self._conversation:
                 if self._latest_conversation_path is None:
                     self._latest_conversation_path = (
@@ -359,6 +392,26 @@ class RowbotTuiApp(App):
                 self._latest_conversation_path.write_bytes(conversation_data)
             await self.action_quit()
 
+    async def ask_question_to_user(self, request: AskUserRequest) -> AskUserResponse:
+        container = self.query_one("#ask_user_container", Horizontal)
+        message_input = self.query_one("#message_input", Input)
+        widget = AskUserWidget(request)
+
+        self._ask_user_widget = widget
+        message_input.disabled = True
+        self.query_one("#commands-popup", OptionList).remove_class("visible")
+        await container.mount(widget)
+        container.add_class("visible")
+        self.call_after_refresh(widget.focus_first_control)
+
+        try:
+            return await widget.wait_for_answer()
+        finally:
+            container.remove_class("visible")
+            self._ask_user_widget = None
+            await widget.remove()
+            message_input.disabled = False
+
     async def on_input_submitted(self, event: Input.Submitted) -> None:
         if event.input.id != "message_input":
             return
@@ -373,7 +426,17 @@ class RowbotTuiApp(App):
             await self._execute_slash_command(cmd)
             self.query_one("#message_input", Input).clear()
         else:
-            await self.process_conversation()
+            if self._pending_ask_user:
+                self.notify(
+                    "Answer the assistant's question first", severity="warning"
+                )
+                return
+            self.run_worker(
+                self.process_conversation(),
+                group="conversation",
+                exclusive=True,
+                exit_on_error=False,
+            )
 
     async def process_conversation(self) -> None:
         message_input = self.query_one("#message_input", Input)
@@ -390,7 +453,53 @@ class RowbotTuiApp(App):
                 classes="message-row user",
             )
         )
+        conversation.anchor()
 
+        await self._run_conversation_turns(user_prompt=user_message)
+
+    async def _run_conversation_turns(
+        self,
+        *,
+        user_prompt: str | None,
+        deferred_tool_results: DeferredToolResults | None = None,
+    ) -> None:
+        """Run a turn, then resume it as many times as questions need answering."""
+        message_input = self.query_one("#message_input", Input)
+        try:
+            pending = await self._run_agent(
+                user_prompt=user_prompt,
+                agent_conversation=self._conversation,
+                deferred_tool_results=deferred_tool_results,
+            )
+            while pending:
+                self._pending_ask_user = pending
+                call_id, request = next(iter(pending.items()))
+                response = await self.ask_question_to_user(request)
+                if call_id not in self._pending_ask_user:
+                    # Reset via /new (or worker cancellation) while the question was open.
+                    break
+                self._pending_ask_user.pop(call_id, None)
+                result = ask_user_result(request, response)
+                pending = await self._run_agent(
+                    user_prompt=None,
+                    agent_conversation=self._conversation,
+                    deferred_tool_results=DeferredToolResults(calls={call_id: result}),
+                )
+        finally:
+            self._pending_ask_user = {}
+            message_input.disabled = False
+            if self.is_running:
+                message_input.focus()
+
+    async def _run_agent(
+        self,
+        *,
+        user_prompt: str | None,
+        agent_conversation,
+        deferred_tool_results: DeferredToolResults | None = None,
+    ) -> dict[str, AskUserRequest]:
+        """Run one agent pass and return any questions that paused the run."""
+        conversation = self.query_one("#conversation", VerticalScroll)
         plan_container = self.query_one("#plan-container", Horizontal)
         context_label_container = self.query_one("#context-length", Label)
 
@@ -402,8 +511,11 @@ class RowbotTuiApp(App):
 
         blocks: dict[int, Markdown] = {}
         tool_registry: dict[str, ToolWidget] = {}
+        pending: dict[str, AskUserRequest] = {}
         async with _agent.run_stream_events(
-            user_prompt=user_message, conversation=self._conversation
+            user_prompt=user_prompt,
+            conversation=agent_conversation,
+            deferred_tool_results=deferred_tool_results,
         ) as events:
             async for event in events:
                 if isinstance(event, PartStartEvent):
@@ -524,10 +636,18 @@ class RowbotTuiApp(App):
                     self._latest_conversation_path.write_bytes(conversation_data)
                     await self.action_bell()
                     self.notify("conversation saved", severity="information")
+                    if isinstance(event.result, AgentRunResult) and isinstance(
+                        event.result.output, DeferredToolRequests
+                    ):
+                        pending = {
+                            call.tool_call_id: AskUserRequest.from_tool_call(call)
+                            for call in event.result.output.calls
+                            if call.tool_name == TOOL_NAME
+                        }
 
         conversation.anchor()
-        message_input.focus()
         await asyncio.to_thread(logfire.force_flush)
+        return pending
 
 
 def run_tui_app() -> None:

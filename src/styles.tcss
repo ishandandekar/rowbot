@@ -90,6 +90,18 @@ ToolWidget {
     padding: 0 1 1 1;
 }
 
+#ask_user_container {
+    display: none;
+    width: 100%;
+    height: auto;
+    align-horizontal: center;
+    margin-bottom: 1;
+}
+
+#ask_user_container.visible {
+    display: block;
+}
+
 #plan-container {
     width: 100%;
     height: auto;
